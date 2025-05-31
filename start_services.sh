@@ -5,6 +5,7 @@ set -e
 # HOST_GID can also be from the environment.
 # If HOST_UID is not set or is empty, skip user/group modification.
 
+
 if [ -n "$HOST_UID" ]; then
     # If HOST_GID is not set, default it to HOST_UID.
     # This is only relevant if HOST_UID is set.
@@ -26,9 +27,9 @@ if [ -n "$HOST_UID" ]; then
     else
       echo "jovyan UID ($CURRENT_UID) and GID ($CURRENT_GID) already match specified HOST_UID ($HOST_UID) and HOST_GID ($HOST_GID_TO_SET). No changes made."
     fi
+
 else
     echo "HOST_UID is not set or is empty. Skipping jovyan user/group modification."
 fi
 
-sed -i "s|\$NB_USER|$NB_USER|g" /etc/supervisor/services.conf
 /usr/bin/supervisord -n -c /etc/supervisor/services.conf
