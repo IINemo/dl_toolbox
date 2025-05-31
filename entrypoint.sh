@@ -13,6 +13,11 @@ then
         /home/jovyan/jupyter/jupyter_server_config.py
 fi
 
+if [ ! -z "$DLBOX_USERNAME" ]
+then
+    useradd -u 1000 -m "$DLBOX_USERNAME" -s bash
+fi
+
 export PYTHONPATH="$PYTHONPATH:/notebook"
 
 $@

@@ -1,8 +1,9 @@
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+
 
 ARG NB_USER="jovyan"
 ARG NB_UID="1001"
-ARG NB_GID="100"
+ARG NB_GID="1001"
 
 
 # ====== ROOT ======
@@ -10,27 +11,11 @@ USER root
 
 # Basic libs
 RUN apt clean && apt update
-
-RUN apt install -yqq curl
-
-RUN DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential libbz2-dev \
-                         libssl-dev libreadline-dev \
-                         libsqlite3-dev tk-dev libpng-dev libfreetype6-dev git \
-                         cmake wget gfortran \
-                         libatlas3-base libhdf5-dev libxml2-dev libxslt-dev \
-                         zlib1g-dev pkg-config graphviz \
-                         locales nodejs libffi-dev liblapacke-dev libblas-dev liblapack-dev liblzma-dev
-
-RUN apt install -y acl
+RUN apt install -yqq curl wget tmux mc nano
+RUN DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential locales acl
 
 # Nodejs 
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash && apt install -y nodejs
-
-# VPN
-RUN apt -y install openvpn
-
-# SSH
-RUN apt install -y openssh-server 
 
 # UTF-8 locale
 RUN sed -i -e 's/# en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
@@ -39,15 +24,17 @@ ENV LANG en_US.UTF-8
 ENV LANGUAGE en_US:en
 ENV LC_ALL en_US.UTF-8
 
-# Create nonroot user
+# Create a nonroot user
+RUN userdel -rf ubuntu || true
+
+ENV HOME=/home/$NB_USER
 ENV CONDA_DIR=/opt/conda
 RUN useradd -m -s /bin/bash -N -u $NB_UID $NB_USER && \
    mkdir -p $CONDA_DIR && \
    chown $NB_USER:$NB_GID $CONDA_DIR && \
-   chmod -R 777 $CONDA_DIR
-
-ENV HOME=/home/$NB_USER
-
+   chmod -R 777 /home/$NB_USER && \
+   chmod -R 777 $CONDA_DIR && \
+   groupadd -g ${NB_GID} ${NB_USER}
 
 # ====== NONROOT ======
 
@@ -57,49 +44,49 @@ WORKDIR /tmp
 RUN setfacl -PRdm u::rwx,g::rwx,o::rwx ${CONDA_DIR}
 RUN setfacl -PRdm u::rwx,g::rwx,o::rwx ${HOME}
 
-# Install Python
+# Install Conda
 ENV PATH="$CONDA_DIR/bin:${PATH}"
 RUN wget -nv https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh && \ 
              bash miniconda.sh -f -b -p $CONDA_DIR && \
-             rm -f miniconda.sh
-RUN conda config --add channels conda-forge
+             rm -f miniconda.sh && \
+             conda config --add channels conda-forge && \
+             conda init
+
+# Install Python
+RUN conda install -c conda-forge python==3.12 xeus-python
 
 # Generaul ML tools
-RUN conda install \ 
-           numpy scipy pandas gensim scikit-learn scikit-image \
+RUN pip install \ 
+           numpy scipy pandas scikit-learn \
            ujson line_profiler matplotlib \
            xgboost joblib lxml h5py tqdm lightgbm lime \ 
-           scikit-image tensorboardX plotly graphviz seaborn
-RUN pip install tables sharedmem
+           scikit-image tensorboardX plotly graphviz seaborn \
+           jsonlines pyyaml optuna hydra-core wandb huggingface_hub \
+           tables sharedmem
 
 # Basic computation frameworks
-RUN pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cu118
-RUN conda install tensorflow
+RUN pip install torch --index-url https://download.pytorch.org/whl/cu128
 
 # NLP tools
-RUN conda install -c conda-forge nltk
-RUN pip install transformers
+RUN pip install nltk yargy
+RUN pip install transformers accelerate datasets evaluate trl
 RUN pip install -U pymystem3 # && python -c "import pymystem3 ; pymystem3.Mystem()"
 
 # CV tools
-RUN pip install torchvision --index-url https://download.pytorch.org/whl/cu118
+RUN pip install torchvision --index-url https://download.pytorch.org/whl/cu128
 
 # Jupyterlab
-RUN conda install -c conda-forge jupyterlab
-RUN conda install -c conda-forge nb_conda_kernels
-RUN conda install -c conda-forge jupyter_contrib_nbextensions
-RUN conda install -c conda-forge ipywidgets
+RUN pip install jupyterlab  \ 
+     jupyter_contrib_nbextensions ipywidgets
 
 
-# ==== Finalizing ====
-VOLUME ["/notebook", "$HOME/jupyter/certs"]
-WORKDIR /notebook
+# ==== Finalizing Jupyter ====
+VOLUME [${HOME}/workspace, "$HOME/jupyter/certs"]
+WORKDIR ${HOME}/workspace
 
-COPY --chown=$NB_UID:$NB_GID --chmod=777 test_scripts $HOME/test_scripts
-COPY --chown=$NB_UID:$NB_GID --chmod=777 jupyter $HOME/jupyter
-
-# RUN chmod -R 777 $CONDA_DIR
-RUN chmod -R 777 $HOME
+COPY --chown=$NB_UID:$NB_UID --chmod=777 test_scripts $HOME/test_scripts
+COPY --chown=$NB_UID:$NB_UID --chmod=777 jupyter $HOME/jupyter
+RUN chmod -R 777 ${HOME}/jupyter && chmod -R 777 ${HOME}/test_scripts
 
 COPY --chmod=777 entrypoint.sh /entrypoint.sh
 COPY --chmod=777 hashpwd.py /hashpwd.py
@@ -109,7 +96,28 @@ ENV JUPYTER_RUNTIME_DIR="${HOME}/jupyter/run"
 ENV JUPYTER_DATA_DIR="${HOME}/jupyter/data"
 
 EXPOSE 8888
-EXPOSE 22
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD [ "jupyter", "lab", "--ip=0.0.0.0", "--allow-root" ]
+
+# ==== Adding SSH service
+USER root
+
+# Installing SSH
+RUN apt install -y openssh-server 
+RUN mkdir -p /run/sshd && chmod 0755 /run/sshd
+RUN ssh-keygen -A
+
+VOLUME [$HOME/.ssh]
+
+# Disallow root login, disable pw-auth if you wish
+RUN sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+RUN apt install -y supervisor
+
+COPY --chmod=755 services.conf /etc/supervisor/services.conf
+COPY --chmod=755 start_services.sh /start_services.sh
+
+EXPOSE 2222
+
+CMD ["/start_services.sh"]
